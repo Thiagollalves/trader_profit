@@ -1,11 +1,14 @@
+import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from trader_profit.funds_research.config import load_funds_research_config
-from trader_profit.funds_research.models import FundFinding, FundsResearchReport
-from trader_profit.funds_research.parsing import detect_transactional_screen, parse_fund_page_text
+from trader_profit.funds_research.parsing import LinkRecord, collect_candidate_links, detect_transactional_screen, parse_fund_page_text
 from trader_profit.funds_research.prompt import render_safe_prompt
 from trader_profit.funds_research.report import finalize_fund, render_report_markdown
+from trader_profit.funds_research.runner import FundsResearchRunner
+from trader_profit.funds_research.models import FundFinding, FundsResearchReport
 
 
 def test_load_funds_research_config_reads_dotenv(tmp_path):
@@ -37,6 +40,7 @@ def test_load_funds_research_config_reads_dotenv(tmp_path):
     assert config.credentials.is_complete is True
     assert config.keep_browser_open is True
     assert config.map_open_page is False
+    assert "Escolher" not in config.blocked_action_keywords
 
 
 def test_load_funds_research_config_defaults_browser_hold_off_in_headless_mode(tmp_path):
@@ -61,6 +65,53 @@ def test_load_funds_research_config_enables_page_map(tmp_path):
     )
 
     assert config.map_open_page is True
+
+
+def test_collect_candidate_links_keeps_fund_cards_when_context_mentions_escolher(tmp_path):
+    config = load_funds_research_config(
+        env={
+            "TRADER_PROFIT_FUNDS_PORTAL_URL": "https://app.santandercorretora.com.br/fundos/investir",
+            "TRADER_PROFIT_FUNDS_DOCS_DOMAIN": "toroinvestimentos.com.br",
+        },
+        dotenv_path=tmp_path / "missing.env",
+    )
+
+    records = [
+        LinkRecord(
+            text="Fundo Exemplo",
+            href="https://app.santandercorretora.com.br/fundos/exemplo",
+            context="Card com botao Escolher e descricao do fundo",
+        )
+    ]
+
+    filtered = collect_candidate_links(
+        records,
+        allowed_domains=config.allowed_domains,
+        blocked_keywords=config.blocked_action_keywords,
+    )
+
+    assert len(filtered) == 1
+    assert filtered[0].text == "Fundo Exemplo"
+
+
+def test_save_startup_artifacts_writes_diagnostic_files(tmp_path):
+    config = load_funds_research_config(
+        env={
+            "TRADER_PROFIT_FUNDS_DEBUG_DIR": str(tmp_path / "debug"),
+        },
+        dotenv_path=tmp_path / "missing.env",
+    )
+
+    runner = FundsResearchRunner(config)
+    asyncio.run(runner._save_startup_artifacts(reason="startup failure: boom", error=RuntimeError("boom")))
+
+    json_files = sorted((tmp_path / "debug").glob("*_startup.json"))
+    assert json_files
+    payload = json.loads(json_files[0].read_text(encoding="utf-8"))
+    assert payload["reason"] == "startup failure: boom"
+    assert payload["exception"] == "RuntimeError: boom"
+    assert payload["portal_url"] == config.portal_url
+    assert json_files[0].with_suffix(".md").exists()
 
 
 def test_render_safe_prompt_uses_placeholders_and_keeps_secrets_out(tmp_path):

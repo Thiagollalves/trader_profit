@@ -257,9 +257,15 @@ class TradingState:
             self.trading_halted,
             len(self.pending_orders),
         )
-        kind = "order_registered"
         if order.order_id in self.pending_orders:
-            kind = "duplicate_order_ignored"
+            return self._record_transition(
+                "duplicate_order_ignored",
+                before,
+                before,
+                f"duplicate order {order.order_id} ignored",
+                reference_id=order.order_id,
+            )
+
         self.pending_orders[order.order_id] = order
         after = _summary(
             self.mode,
@@ -271,7 +277,13 @@ class TradingState:
             self.trading_halted,
             len(self.pending_orders),
         )
-        return self._record_transition(kind, before, after, f"registered order {order.order_id}", reference_id=order.order_id)
+        return self._record_transition(
+            "order_registered",
+            before,
+            after,
+            f"registered order {order.order_id}",
+            reference_id=order.order_id,
+        )
 
     def _apply_fill_delta(self, delta: Decimal, fill_price: Decimal) -> Decimal:
         realized = ZERO

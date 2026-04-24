@@ -16,3 +16,4 @@ htmlcov/
 reports/
 .cache/
 .tmp/
+.pytest-temp/

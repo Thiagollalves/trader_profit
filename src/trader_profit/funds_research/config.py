@@ -181,7 +181,6 @@ def load_funds_research_config(
             "Aceitar",
             "Assinar",
             "Enviar ordem",
-            "Escolher",
             "Comprar",
             "Vender",
             "Transferir",

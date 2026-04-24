@@ -65,8 +65,18 @@ class FundsResearchRunner:
             self.config.session_state_path.parent.mkdir(parents=True, exist_ok=True)
 
         async with async_playwright() as playwright:
-            context = await self._launch_context(playwright)
-            page = await context.new_page()
+            context = None
+            try:
+                context = await self._launch_context(playwright)
+                page = await context.new_page()
+            except Exception as exc:
+                if context is not None:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+                await self._save_startup_artifacts(reason=f"startup failure: {exc}", error=exc)
+                raise
             try:
                 await page.goto(self.config.portal_url, wait_until="domcontentloaded", timeout=self.config.timeout_ms)
                 self._record_visit(page.url)
@@ -82,22 +92,22 @@ class FundsResearchRunner:
                     report.stopped_reason = stopped_reason
                     report.alerts.append(stopped_reason)
                     await self._save_page_map_artifacts(page, reason=stopped_reason)
-                    return
-                await self._navigate_to_funds_listing(page)
-                await self._ensure_safe_page(page, context="funds-list")
-                fund_entries = await self._collect_fund_entries(page)
-                if self.config.max_funds is not None:
-                    fund_entries = fund_entries[: self.config.max_funds]
+                else:
+                    await self._navigate_to_funds_listing(page)
+                    await self._ensure_safe_page(page, context="funds-list")
+                    fund_entries = await self._collect_fund_entries(page)
+                    if self.config.max_funds is not None:
+                        fund_entries = fund_entries[: self.config.max_funds]
 
-                if not fund_entries:
-                    stopped_reason = "nenhum fundo detectado na listagem"
-                    report.stopped_reason = stopped_reason
-                    report.alerts.append(stopped_reason)
-                    await self._save_debug_artifacts(page, reason=stopped_reason)
+                    if not fund_entries:
+                        stopped_reason = "nenhum fundo detectado na listagem"
+                        report.stopped_reason = stopped_reason
+                        report.alerts.append(stopped_reason)
+                        await self._save_debug_artifacts(page, reason=stopped_reason)
 
-                for index, entry in enumerate(fund_entries, start=1):
-                    fund = await self._inspect_fund(context, entry, order_index=index)
-                    report.funds.append(finalize_fund(fund))
+                    for index, entry in enumerate(fund_entries, start=1):
+                        fund = await self._inspect_fund(context, entry, order_index=index)
+                        report.funds.append(finalize_fund(fund))
 
             except FundsResearchSecurityError as exc:
                 report.stopped_reason = str(exc)
@@ -131,7 +141,8 @@ class FundsResearchRunner:
                         await context.storage_state(path=str(self.config.session_state_path))
                     except Exception:
                         pass
-                await context.close()
+                if context is not None:
+                    await context.close()
 
         report.finished_at = datetime.now(timezone.utc)
         markdown = render_report_markdown(report)
@@ -264,6 +275,42 @@ class FundsResearchRunner:
                 "html": str(html_path) if html_path is not None else None,
                 "json": str(json_path) if json_path is not None else None,
                 "markdown": str(md_path) if md_path is not None else None,
+            },
+        )
+
+    async def _save_startup_artifacts(self, *, reason: str, error: BaseException | None = None) -> None:
+        self.config.debug_output_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        base = self.config.debug_output_dir / f"{stamp}_startup"
+
+        json_path = base.with_suffix(".json")
+        md_path = base.with_suffix(".md")
+
+        payload = {
+            "reason": reason,
+            "exception": f"{type(error).__name__}: {error}" if error is not None else None,
+            "portal_url": self.config.portal_url,
+            "docs_domain": self.config.docs_domain,
+            "profile_dir": str(self.config.profile_dir),
+            "session_state_path": str(self.config.session_state_path) if self.config.session_state_path is not None else None,
+            "browser_channel": self.config.browser_channel,
+            "browser_executable_path": str(self.config.browser_executable_path) if self.config.browser_executable_path is not None else None,
+            "headless": self.config.headless,
+            "keep_browser_open": self.config.keep_browser_open,
+            "manual_login": self.config.manual_login,
+            "map_open_page": self.config.map_open_page,
+            "visited_urls": list(self._visited_urls),
+        }
+
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        md_path.write_text(self._render_startup_artifacts_markdown(payload), encoding="utf-8")
+
+        self.logger.info(
+            "startup diagnostics saved",
+            extra={
+                "reason": reason,
+                "json": str(json_path),
+                "markdown": str(md_path),
             },
         )
 
@@ -861,6 +908,33 @@ class FundsResearchRunner:
         if visible_text:
             for entry in visible_text:
                 lines.append(f"- {entry}")
+        else:
+            lines.append("- none")
+        return "\n".join(lines) + "\n"
+
+    def _render_startup_artifacts_markdown(self, payload: dict[str, Any]) -> str:
+        lines = [
+            "# Startup diagnostics",
+            "",
+            f"- Reason: {payload.get('reason') or 'n/a'}",
+            f"- Exception: {payload.get('exception') or 'n/a'}",
+            f"- Portal: {payload.get('portal_url') or 'n/a'}",
+            f"- Documents domain: {payload.get('docs_domain') or 'n/a'}",
+            f"- Profile dir: {payload.get('profile_dir') or 'n/a'}",
+            f"- Session state: {payload.get('session_state_path') or 'n/a'}",
+            f"- Browser channel: {payload.get('browser_channel') or 'n/a'}",
+            f"- Browser executable: {payload.get('browser_executable_path') or 'n/a'}",
+            f"- Headless: {payload.get('headless')}",
+            f"- Keep browser open: {payload.get('keep_browser_open')}",
+            f"- Manual login: {payload.get('manual_login')}",
+            f"- Map open page: {payload.get('map_open_page')}",
+            "",
+            "## Visited URLs",
+        ]
+        visited_urls = payload.get("visited_urls") or []
+        if visited_urls:
+            for url in visited_urls:
+                lines.append(f"- {url}")
         else:
             lines.append("- none")
         return "\n".join(lines) + "\n"

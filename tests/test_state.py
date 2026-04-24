@@ -32,6 +32,43 @@ def test_trading_state_ignores_duplicate_market_event():
     assert len(state.processed_market_event_ids) == 1
 
 
+def test_trading_state_keeps_original_pending_order_on_duplicate():
+    state = TradingState(mode=TradingMode.SIMULATION, symbol="WINM26")
+    first_order = OrderCommand(
+        order_id="ord-1",
+        timestamp=datetime(2026, 4, 20, 9, 0, tzinfo=timezone.utc),
+        symbol="WINM26",
+        side=OrderSide.BUY,
+        quantity=Decimal("1"),
+        order_type=OrderType.MARKET,
+        mode=TradingMode.SIMULATION,
+        signal_id="sig-1",
+        risk_decision_id="risk-1",
+        price=Decimal("200.0"),
+    )
+    duplicate_order = OrderCommand(
+        order_id="ord-1",
+        timestamp=datetime(2026, 4, 20, 9, 1, tzinfo=timezone.utc),
+        symbol="WINM26",
+        side=OrderSide.BUY,
+        quantity=Decimal("3"),
+        order_type=OrderType.LIMIT,
+        mode=TradingMode.SIMULATION,
+        signal_id="sig-2",
+        risk_decision_id="risk-2",
+        price=Decimal("201.0"),
+    )
+
+    first_transition = state.register_order(first_order)
+    duplicate_transition = state.register_order(duplicate_order)
+
+    assert first_transition.kind == "order_registered"
+    assert duplicate_transition.kind == "duplicate_order_ignored"
+    assert state.pending_orders["ord-1"] == first_order
+    assert state.pending_orders["ord-1"].quantity == Decimal("1")
+    assert len(state.pending_orders) == 1
+
+
 def test_trading_state_updates_position_and_realized_pnl_from_reports():
     state = TradingState(mode=TradingMode.SIMULATION, symbol="WINM26")
     buy_order = OrderCommand(
